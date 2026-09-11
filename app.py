@@ -6,54 +6,51 @@ import base64
 
 st.set_page_config(page_title="Shadow AI - Advanced", page_icon="🤖", layout="centered")
 
-# Sol panel (Sidebar) - Söhbət tarixçəsi və tənzimləmələr
+# ---------- SIDEBAR ----------
 with st.sidebar:
     st.header("⚙️ Settings")
     user_api_key = st.text_input("Enter your Groq API Key:", type="password")
     st.markdown("---")
-    
+
     st.subheader("💬 Chats")
-    
-    # Söhbətləri yadda saxlamaq üçün session_state
+
+    # Session state init
     if "chats" not in st.session_state:
-        st.session_state.chats = {} 
+        st.session_state.chats = {}
     if "current_chat_id" not in st.session_state:
         first_id = str(uuid.uuid4())[:8]
         st.session_state.chats[first_id] = []
         st.session_state.current_chat_id = first_id
 
-    # Yeni söhbət yaratma düyməsi
+    # Yeni söhbət
     if st.button("➕ New Chat", use_container_width=True):
         new_id = str(uuid.uuid4())[:8]
         st.session_state.chats[new_id] = []
         st.session_state.current_chat_id = new_id
         st.rerun()
 
-    # Cari söhbəti təmizləmək/silmək üçün düymə
+    # Cari söhbəti təmizlə
     if st.button("🗑️ Clear Current Chat", use_container_width=True):
-        current_id = st.session_state.current_chat_id
-        if current_id in st.session_state.chats:
-            st.session_state.chats[current_id] = []
+        st.session_state.chats[st.session_state.current_chat_id] = []
         st.rerun()
 
     st.markdown("---")
     st.markdown("### History")
-    
-    # Mövcud söhbətlərin siyahısı
+
     for chat_id in list(st.session_state.chats.keys()):
-        messages_in_chat = st.session_state.chats[chat_id]
-        if messages_in_chat:
-            chat_title = messages_in_chat[0]["content"][:20] + "..."
+        msgs = st.session_state.chats[chat_id]
+        if msgs and msgs[0].get("content"):
+            title = msgs[0]["content"][:20] + ("..." if len(msgs[0]["content"]) > 20 else "")
         else:
-            chat_title = f"Chat {chat_id}"
-            
+            title = f"Chat {chat_id}"
+
         col1, col2 = st.columns([0.8, 0.2])
         with col1:
-            if st.button(chat_title, key=f"chat_btn_{chat_id}", use_container_width=True):
+            btn_type = "primary" if chat_id == st.session_state.current_chat_id else "secondary"
+            if st.button(title, key=f"chat_btn_{chat_id}", use_container_width=True, type=btn_type):
                 st.session_state.current_chat_id = chat_id
                 st.rerun()
         with col2:
-            # Söhbətin özünü tamamilə silmək üçün düymə (əgər birdən çox chat varsa)
             if len(st.session_state.chats) > 1:
                 if st.button("❌", key=f"del_btn_{chat_id}"):
                     del st.session_state.chats[chat_id]
@@ -61,90 +58,162 @@ with st.sidebar:
                     st.rerun()
 
     st.markdown("---")
+    st.subheader("🔍 Options")
+    use_web_search = st.toggle("Enable web search", value=False)
+    model_choice = st.selectbox(
+        "Model:",
+        [
+            "openai/gpt-oss-120b",
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+        ],
+        index=1,
+    )
+
+    st.markdown("---")
     st.markdown("💡 *Get a free Groq API key from [Groq Console](https://console.groq.com/).*")
 
-# Əsas səhifə başlığı
+# ---------- MAIN ----------
 st.title("🤖 Shadow - Smart Assistant")
-st.caption("An AI assistant with internet access, file upload, and chat management")
+st.caption("An AI assistant with optional internet access, file upload, and chat management")
 
-# Veb axtarış funksiyası
-def web_search(query: str) -> str:
+if not user_api_key:
+    st.info("👈 Please enter your Groq API key in the sidebar to begin.")
+    st.stop()
+
+# Groq client
+try:
+    client = Groq(api_key=user_api_key)
+except Exception as e:
+    st.error(f"Invalid API key: {e}")
+    st.stop()
+
+# ---------- WEB SEARCH ----------
+def web_search(query: str, max_results: int = 3) -> str:
     try:
         with DDGS() as ddgs:
-            results = [r['body'] for r in ddgs.text(query, max_results=3)]
-        return " ".join(results)
+            results = [r.get("body", "") for r in ddgs.text(query, max_results=max_results)]
+        return " ".join(filter(None, results))
     except Exception as e:
-        return ""
+        return f"[Search error: {e}]"
 
-# Cari söhbətin mesajlarını yükləyək
+# ---------- CHAT STATE ----------
 current_chat = st.session_state.current_chat_id
 if current_chat not in st.session_state.chats:
     st.session_state.chats[current_chat] = []
 
-# Köhnə mesajları ekranda göstər
+# Köhnə mesajları göstər
 for message in st.session_state.chats[current_chat]:
     with st.chat_message(message["role"]):
-        if "image" in message and message["image"]:
+        if message.get("image"):
             st.image(message["image"], width=300)
         st.markdown(message["content"])
 
-# Fayl/Şəkil yükləmək üçün widget
-uploaded_file = st.file_uploader("Upload an image or file (optional):", type=["png", "jpg", "jpeg", "txt", "pdf"])
+# ---------- FILE UPLOAD ----------
+uploaded_file = st.file_uploader(
+    "Upload an image or file (optional):",
+    type=["png", "jpg", "jpeg", "txt", "pdf"],
+    key=f"uploader_{current_chat}",
+)
 
-# İstifadəçidən mesaj alaq
+# ---------- CHAT INPUT ----------
 if prompt := st.chat_input("What would you like to ask Shadow?"):
-    if not user_api_key:
-        st.error("Please enter your Groq API key from the sidebar first!")
-        st.stop()
-        
+    # Fayl emalı
     file_bytes = None
-    file_base64 = None
-    
+    file_type = None
+    extracted_text = ""
+
     if uploaded_file is not None:
         file_bytes = uploaded_file.getvalue()
-        file_base64 = base64.b64encode(file_bytes).decode("utf-8")
+        file_type = uploaded_file.type
 
-    # Mesajı tarixçəyə əlavə edirik
+        # Mətn faylları üçün məzmunu oxu
+        if file_type == "text/plain":
+            try:
+                extracted_text = file_bytes.decode("utf-8", errors="ignore")
+            except Exception:
+                extracted_text = ""
+        # PDF üçün (əgər pypdf quraşdırılıbsa)
+        elif file_type == "application/pdf":
+            try:
+                import io
+                from pypdf import PdfReader
+                reader = PdfReader(io.BytesIO(file_bytes))
+                extracted_text = "\n".join(
+                    (page.extract_text() or "") for page in reader.pages
+                )
+            except Exception:
+                extracted_text = "[PDF could not be read]"
+
+    # İstifadəçi mesajını yadda saxla
     msg_data = {"role": "user", "content": prompt}
-    if uploaded_file is not None and uploaded_file.type.startswith("image/"):
+    if file_bytes and file_type and file_type.startswith("image/"):
         msg_data["image"] = file_bytes
-
     st.session_state.chats[current_chat].append(msg_data)
-    
+
     with st.chat_message("user"):
-        if uploaded_file is not None and uploaded_file.type.startswith("image/"):
-            st.image(file_bytes, width=300)
+        if msg_data.get("image"):
+            st.image(msg_data["image"], width=300)
         st.markdown(prompt)
 
-    # Assistentin cavabı
+    # ---------- ASSISTANT ----------
     with st.chat_message("assistant"):
-        with st.spinner("Shadow is thinking and searching the web..."):
-            search_data = web_search(prompt)
-            
-            system_prompt = f"""
-            Your name is Shadow. You are a high-level analyst, an AI assistant with internet access and deep reasoning capabilities.
-            Important rule: Always respond in the exact language the user is writing in.
-            Use the following real-time web search data when answering the user's question:
-            
-            [Web Data]:
-            {search_data}
-            """
+        placeholder = st.empty()
+        full_response = ""
 
-            try:
-                client = Groq(api_key=user_api_key)
-                
-                # Əgər şəkil yüklənibsə və model dəstəkləyirsə vizual məlumatı da nəzərə alaq
-                chat_completion = client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt}
+        with st.spinner("Shadow is thinking..."):
+            # Veb axtarışı (yalnız toggle açıqdırsa)
+            search_data = ""
+            if use_web_search:
+                search_data = web_search(prompt)
+
+            # System prompt
+            system_prompt = (
+                "Your name is Shadow. You are a high-level analyst and AI assistant "
+                "with deep reasoning capabilities.\n"
+                "Important rule: Always respond in the exact language the user writes in."
+            )
+            if search_data:
+                system_prompt += f"\n\n[Real-time web search data]:\n{search_data}"
+            if extracted_text:
+                system_prompt += f"\n\n[File content provided by user]:\n{extracted_text}"
+
+            # Mesaj siyahısı
+            llm_messages = [{"role": "system", "content": system_prompt}]
+
+            # Şəkil varsa vision formatında göndər
+            if file_bytes and file_type and file_type.startswith("image/"):
+                b64 = base64.b64encode(file_bytes).decode("utf-8")
+                llm_messages.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{file_type};base64,{b64}"},
+                        },
                     ],
-                    model="openai/gpt-oss-120b",
+                })
+            else:
+                llm_messages.append({"role": "user", "content": prompt})
+
+            # API çağırışı (streaming)
+            try:
+                stream = client.chat.completions.create(
+                    model=model_choice,
+                    messages=llm_messages,
                     temperature=0.5,
+                    stream=True,
                 )
-                response = chat_completion.choices[0].message.content
+                for chunk in stream:
+                    delta = chunk.choices[0].delta.content or ""
+                    full_response += delta
+                    placeholder.markdown(full_response + "▌")
+                placeholder.markdown(full_response)
             except Exception as e:
-                response = f"An error occurred: {str(e)}"
-            
-            st.markdown(response)
-            st.session_state.chats[current_chat].append({"role": "assistant", "content": response})
+                full_response = f"❌ An error occurred: {e}"
+                placeholder.error(full_response)
+
+        st.session_state.chats[current_chat].append(
+            {"role": "assistant", "content": full_response}
+        )
